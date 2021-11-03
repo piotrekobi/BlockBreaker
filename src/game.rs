@@ -2,6 +2,7 @@ use ggez::event::KeyCode;
 use ggez::{event, graphics, timer, Context, GameResult};
 use oorandom::Rand32;
 use std::ops;
+use std::time::Instant;
 
 pub const GRID_SIZE: [i16; 2] = [30, 20];
 pub const GRID_CELL_SIZE: [i16; 2] = [32, 32];
@@ -14,10 +15,10 @@ struct GridPosition {
 }
 
 impl GridPosition {
-    pub fn random(rng: &mut Rand32, max_x: i16, max_y: i16) -> Self {
+    pub fn random(rng: &mut Rand32, min_x: u32, max_x: u32, min_y: u32, max_y: u32) -> Self {
         (
-            rng.rand_range(0..(max_x as u32)) as i16,
-            rng.rand_range(0..(max_y as u32)) as i16,
+            rng.rand_range(min_x..max_x) as i16,
+            rng.rand_range(min_y..max_y) as i16,
         )
             .into()
     }
@@ -68,11 +69,20 @@ struct Palette {
     dir: Direction,
 }
 
+#[derive(Clone, Copy)]
+struct Block {
+    pos: GridPosition,
+    duration: u32,
+    creation_time: Instant,
+    val: i8,
+    broken: bool,
+}
+
 impl Ball {
     pub fn new(pos: GridPosition) -> Self {
         Ball {
             pos: pos,
-            speed: [6.0, 6.0],
+            speed: [9.0, -9.0],
             offsets: [0, 0],
         }
     }
@@ -117,11 +127,11 @@ impl Palette {
 
     fn update(&mut self) {
         if self.dir == Direction::Left {
-            if self.pos.x >= 2 {
+            if self.pos.x >= 3 {
                 self.pos.x -= 1;
             }
         } else if self.dir == Direction::Right {
-            if self.pos.x < GRID_SIZE[0] - 2 {
+            if self.pos.x < GRID_SIZE[0] - 3 {
                 self.pos.x += 1;
             }
         }
@@ -132,9 +142,9 @@ impl Palette {
             ctx,
             graphics::DrawMode::fill(),
             graphics::Rect::new_i32(
-                (self.pos.x - 1) as i32 * GRID_CELL_SIZE[0] as i32,
+                (self.pos.x - 2) as i32 * GRID_CELL_SIZE[0] as i32,
                 self.pos.y as i32 * GRID_CELL_SIZE[1] as i32,
-                (GRID_CELL_SIZE[0] * 3) as i32,
+                (GRID_CELL_SIZE[0] * 5) as i32,
                 GRID_CELL_SIZE[1] as i32,
             ),
             [0.0, 0.0, 0.0, 1.0].into(),
@@ -144,27 +154,81 @@ impl Palette {
     }
 }
 
+impl Block {
+    pub fn new(pos: GridPosition, duration: u32, val: i8) -> Self {
+        Block {
+            pos: pos,
+            duration: duration,
+            creation_time: Instant::now(),
+            val: val,
+            broken: false,
+        }
+    }
+
+    fn draw(&self, ctx: &mut Context) -> GameResult<()> {
+        let circle = graphics::Mesh::new_rectangle(
+            ctx,
+            graphics::DrawMode::fill(),
+            graphics::Rect::new_i32(
+                self.pos.x as i32 * GRID_CELL_SIZE[0] as i32,
+                self.pos.y as i32 * GRID_CELL_SIZE[1] as i32,
+                GRID_CELL_SIZE[0] as i32,
+                GRID_CELL_SIZE[1] as i32,
+            ),
+            [0.0, 0.0, 0.0, 1.0].into(),
+        )?;
+        graphics::draw(ctx, &circle, (ggez::mint::Point2 { x: 0.0, y: 0.0 },))?;
+        Ok(())
+    }
+}
+
 pub struct GameState {
     palette: Palette,
     ball: Ball,
-    gameover: bool,
+    blocks: std::vec::Vec<Block>,
+    paused: bool,
     random_seed: Rand32,
 }
 
 impl GameState {
     pub fn new() -> Self {
         let palette_pos = (GRID_SIZE[0] / 2, GRID_SIZE[1] - 2).into();
-        let ball_pos = (GRID_SIZE[0] / 2, 7).into();
+        let ball_pos = (GRID_SIZE[0] / 2, GRID_SIZE[1] - 5).into();
         let mut seed: [u8; 8] = [0; 8];
         getrandom::getrandom(&mut seed[..]).expect("Could not create RNG seed");
-        let random_seed = Rand32::new(u64::from_ne_bytes(seed));
+        let mut random_seed = Rand32::new(u64::from_ne_bytes(seed));
+        let mut block_vec = Vec::new();
+        for _ in 0..20 {
+            block_vec.push(Block::new(
+                GridPosition::random(
+                    &mut random_seed,
+                    1,
+                    (GRID_SIZE[0] - 2) as u32,
+                    1,
+                    (GRID_SIZE[1] - 10) as u32,
+                ),
+                10,
+                5,
+            ));
+        }
 
         GameState {
             palette: Palette::new(palette_pos),
             ball: Ball::new(ball_pos),
-            gameover: false,
-            random_seed,
+            blocks: block_vec,
+            paused: true,
+            random_seed: random_seed,
         }
+    }
+
+    fn update_blocks(&mut self) {
+        let mut updated_blocks = Vec::new();
+        for block in &mut self.blocks {
+            if !block.broken {
+                updated_blocks.push(*block);
+            }
+        }
+        self.blocks = updated_blocks;
     }
 
     fn set_direction(&mut self, ctx: &mut Context) {
@@ -180,10 +244,10 @@ impl GameState {
 
     fn set_ball_direction(&mut self) {
         if self.ball.pos.y + 1 == self.palette.pos.y && self.ball.speed[1] > 0.0 {
-            if (self.ball.pos.x - self.palette.pos.x).abs() < 2 {
+            if (self.ball.pos.x - self.palette.pos.x).abs() < 3 {
                 self.ball.speed[1] *= -1.0;
-                self.ball.speed[0] = ((self.ball.pos.x - self.palette.pos.x) as f32 * 7.5)
-                    + (self.ball.offsets[0] as f32 / (GRID_CELL_SIZE[0] / 5) as f32) as f32
+                self.ball.speed[0] = ((self.ball.pos.x - self.palette.pos.x) as f32 * 9.0)
+                    + (self.ball.offsets[0] as f32 / (GRID_CELL_SIZE[0] / 16) as f32) as f32
             }
         } else if self.ball.pos.y == 0 && self.ball.speed[1] < 0.0 {
             self.ball.speed[1] *= -1.0;
@@ -192,6 +256,25 @@ impl GameState {
         } else if self.ball.pos.x == GRID_SIZE[0] - 1 && self.ball.speed[0] > 0.0 {
             self.ball.speed[0] *= -1.0;
         }
+
+        for block in &mut self.blocks {
+            let y_abs = (self.ball.pos.y - block.pos.y).abs();
+            let x_abs = (self.ball.pos.x - block.pos.x).abs();
+            if x_abs < 2 && y_abs < 2 {
+                if x_abs > y_abs {
+                    self.ball.speed[0] *= -1.0;
+                } else if x_abs < y_abs {
+                    self.ball.speed[1] *= -1.0;
+                } else {
+                    if self.ball.offsets[0] < self.ball.offsets[1] {
+                        self.ball.speed[0] *= -1.0;
+                    } else {
+                        self.ball.speed[1] *= -1.0;
+                    }
+                }
+                block.broken = true;
+            }
+        }
     }
 }
 
@@ -199,9 +282,13 @@ impl event::EventHandler<ggez::GameError> for GameState {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
         while timer::check_update_time(ctx, DESIRED_FPS) {
             self.set_direction(ctx);
-            if !self.gameover {
+            if self.palette.dir != Direction::None {
+                self.paused = false;
+            }
+            if !self.paused {
                 self.palette.update();
                 self.ball.update();
+                self.update_blocks();
                 self.set_ball_direction();
             }
         }
@@ -219,6 +306,9 @@ impl event::EventHandler<ggez::GameError> for GameState {
             .draw(ctx)
             .map_err(|err| println!("{:?}", err))
             .ok();
+        for block in &self.blocks {
+            block.draw(ctx).map_err(|err| println!("{:?}", err)).ok();
+        }
         graphics::present(ctx)?;
         ggez::timer::yield_now();
         Ok(())
