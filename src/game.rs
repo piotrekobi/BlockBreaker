@@ -1,12 +1,47 @@
 use ggez::event::KeyCode;
 use ggez::{event, graphics, timer, Context, GameResult};
 use oorandom::Rand32;
+use std::collections::HashMap;
 use std::ops;
 use std::time::Instant;
 
 pub const GRID_SIZE: [i16; 2] = [30, 20];
 pub const GRID_CELL_SIZE: [i16; 2] = [32, 32];
 const DESIRED_FPS: u32 = 30;
+
+lazy_static! {
+    static ref BLOCK_TYPES: HashMap<&'static str, BlockType> = HashMap::from(
+        [
+            (
+                "Red",
+                BlockType {
+                    color: (255, 0, 0).into(),
+                    duration: 5000,
+                    value: 10,
+                },
+            ),
+            (
+                "Blue",
+                BlockType {
+                    color: (0, 0, 255).into(),
+                    duration: 10000,
+                    value: 5,
+                },
+            ),
+            (
+                "Green",
+                BlockType {
+                    color: (0, 255, 0).into(),
+                    duration: 15000,
+                    value: 3,
+                },
+            ),
+        ]
+        .iter()
+        .cloned()
+        .collect(),
+    );
+}
 
 #[derive(Clone, Copy)]
 struct GridPosition {
@@ -70,11 +105,17 @@ struct Palette {
 }
 
 #[derive(Clone, Copy)]
+struct BlockType {
+    color: ggez::graphics::Color,
+    duration: i32,
+    value: i32,
+}
+
+#[derive(Clone, Copy)]
 struct Block {
     pos: GridPosition,
-    duration: u32,
     creation_time: Instant,
-    val: i8,
+    block_type: BlockType,
     broken: bool,
 }
 
@@ -82,7 +123,7 @@ impl Ball {
     pub fn new(pos: GridPosition) -> Self {
         Ball {
             pos: pos,
-            speed: [9.0, -9.0],
+            speed: [12.0, -12.0],
             offsets: [0, 0],
         }
     }
@@ -110,7 +151,7 @@ impl Ball {
             ],
             (GRID_CELL_SIZE[0] / 2) as f32,
             0.1,
-            [0.0, 0.0, 0.0, 1.0].into(),
+            (33, 67, 101).into(),
         )?;
         graphics::draw(ctx, &circle, (ggez::mint::Point2 { x: 0.0, y: 0.0 },))?;
         Ok(())
@@ -147,7 +188,7 @@ impl Palette {
                 (GRID_CELL_SIZE[0] * 5) as i32,
                 GRID_CELL_SIZE[1] as i32,
             ),
-            [0.0, 0.0, 0.0, 1.0].into(),
+            (101, 67, 33).into(),
         )?;
         graphics::draw(ctx, &rectangle, (ggez::mint::Point2 { x: 0.0, y: 0.0 },))?;
         Ok(())
@@ -155,30 +196,49 @@ impl Palette {
 }
 
 impl Block {
-    pub fn new(pos: GridPosition, duration: u32, val: i8) -> Self {
+    pub fn new(pos: GridPosition, block_type: BlockType) -> Self {
         Block {
             pos: pos,
-            duration: duration,
+            block_type: block_type,
             creation_time: Instant::now(),
-            val: val,
             broken: false,
         }
     }
 
-    fn draw(&self, ctx: &mut Context) -> GameResult<()> {
-        let circle = graphics::Mesh::new_rectangle(
-            ctx,
-            graphics::DrawMode::fill(),
-            graphics::Rect::new_i32(
-                self.pos.x as i32 * GRID_CELL_SIZE[0] as i32,
-                self.pos.y as i32 * GRID_CELL_SIZE[1] as i32,
-                GRID_CELL_SIZE[0] as i32,
-                GRID_CELL_SIZE[1] as i32,
-            ),
-            [0.0, 0.0, 0.0, 1.0].into(),
-        )?;
-        graphics::draw(ctx, &circle, (ggez::mint::Point2 { x: 0.0, y: 0.0 },))?;
+    fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+        if !self.broken {
+            let transparency =
+                (self.block_type.duration - self.creation_time.elapsed().as_millis() as i32) as f32
+                    / self.block_type.duration as f32;
+            if transparency < 0.0 {
+                self.broken = true;
+                return Ok(());
+            }
+            let mut color = self.block_type.color;
+            color.a = transparency;
+            let circle = graphics::Mesh::new_rectangle(
+                ctx,
+                graphics::DrawMode::fill(),
+                graphics::Rect::new_i32(
+                    self.pos.x as i32 * GRID_CELL_SIZE[0] as i32,
+                    self.pos.y as i32 * GRID_CELL_SIZE[1] as i32,
+                    GRID_CELL_SIZE[0] as i32,
+                    GRID_CELL_SIZE[1] as i32,
+                ),
+                color,
+            )?;
+            graphics::draw(ctx, &circle, (ggez::mint::Point2 { x: 0.0, y: 0.0 },))?;
+        }
         Ok(())
+    }
+}
+
+fn random_block_type(rng: &mut Rand32) -> BlockType {
+    let rand = rng.rand_float();
+    match rand {
+        x if x < 0.1 => BLOCK_TYPES["Red"],
+        x if x < 0.4 => BLOCK_TYPES["Blue"],
+        _ => BLOCK_TYPES["Green"],
     }
 }
 
@@ -187,37 +247,29 @@ pub struct GameState {
     ball: Ball,
     blocks: std::vec::Vec<Block>,
     paused: bool,
+    last_block_add_time: Instant,
     random_seed: Rand32,
+    score: i32,
 }
 
 impl GameState {
     pub fn new() -> Self {
-        let palette_pos = (GRID_SIZE[0] / 2, GRID_SIZE[1] - 2).into();
+        let palette_pos = (GRID_SIZE[0] / 2, GRID_SIZE[1] - 3).into();
         let ball_pos = (GRID_SIZE[0] / 2, GRID_SIZE[1] - 5).into();
         let mut seed: [u8; 8] = [0; 8];
+
         getrandom::getrandom(&mut seed[..]).expect("Could not create RNG seed");
-        let mut random_seed = Rand32::new(u64::from_ne_bytes(seed));
-        let mut block_vec = Vec::new();
-        for _ in 0..20 {
-            block_vec.push(Block::new(
-                GridPosition::random(
-                    &mut random_seed,
-                    1,
-                    (GRID_SIZE[0] - 2) as u32,
-                    1,
-                    (GRID_SIZE[1] - 10) as u32,
-                ),
-                10,
-                5,
-            ));
-        }
+        let random_seed = Rand32::new(u64::from_ne_bytes(seed));
+        let block_vec = Vec::new();
 
         GameState {
             palette: Palette::new(palette_pos),
             ball: Ball::new(ball_pos),
             blocks: block_vec,
             paused: true,
+            last_block_add_time: Instant::now(),
             random_seed: random_seed,
+            score: 0,
         }
     }
 
@@ -261,19 +313,53 @@ impl GameState {
             let y_abs = (self.ball.pos.y - block.pos.y).abs();
             let x_abs = (self.ball.pos.x - block.pos.x).abs();
             if x_abs < 2 && y_abs < 2 {
-                if x_abs > y_abs {
-                    self.ball.speed[0] *= -1.0;
-                } else if x_abs < y_abs {
-                    self.ball.speed[1] *= -1.0;
-                } else {
-                    if self.ball.offsets[0] < self.ball.offsets[1] {
+                if block.creation_time.elapsed().as_millis() > 100 {
+                    if x_abs > y_abs {
                         self.ball.speed[0] *= -1.0;
-                    } else {
+                    } else if x_abs < y_abs {
                         self.ball.speed[1] *= -1.0;
+                    } else {
+                        if self.ball.offsets[0] < self.ball.offsets[1] {
+                            self.ball.speed[0] *= -1.0;
+                        } else {
+                            self.ball.speed[1] *= -1.0;
+                        }
                     }
+                    block.broken = true;
+                    self.score += block.block_type.value;
                 }
-                block.broken = true;
             }
+        }
+    }
+
+    fn draw_score(&self, ctx: &mut Context) -> GameResult<()> {
+        let mut score_text = ggez::graphics::Text::new(format!("Score: {}", self.score));
+        score_text.set_font(graphics::Font::default(), graphics::PxScale::from(40.0));
+
+        let params = graphics::DrawParam::default()
+            .color(graphics::Color::BLACK)
+            .dest([
+                GRID_CELL_SIZE[0] as f32,
+                GRID_SIZE[1] as f32 * GRID_CELL_SIZE[1] as f32
+                    - 1.5 * GRID_CELL_SIZE[1] as f32 as f32,
+            ]);
+        graphics::draw(ctx, &score_text, params)?;
+        Ok(())
+    }
+
+    fn add_block(&mut self) {
+        if self.last_block_add_time.elapsed().as_millis() > 1000 {
+            self.blocks.push(Block::new(
+                GridPosition::random(
+                    &mut self.random_seed,
+                    1,
+                    (GRID_SIZE[0] - 2) as u32,
+                    1,
+                    (GRID_SIZE[1] - 10) as u32,
+                ),
+                random_block_type(&mut self.random_seed),
+            ));
+            self.last_block_add_time = Instant::now();
         }
     }
 }
@@ -285,6 +371,7 @@ impl event::EventHandler<ggez::GameError> for GameState {
             if self.palette.dir != Direction::None {
                 self.paused = false;
             }
+            self.add_block();
             if !self.paused {
                 self.palette.update();
                 self.ball.update();
@@ -306,9 +393,12 @@ impl event::EventHandler<ggez::GameError> for GameState {
             .draw(ctx)
             .map_err(|err| println!("{:?}", err))
             .ok();
-        for block in &self.blocks {
+        for block in &mut self.blocks {
             block.draw(ctx).map_err(|err| println!("{:?}", err)).ok();
         }
+        self.draw_score(ctx)
+            .map_err(|err| println!("{:?}", err))
+            .ok();
         graphics::present(ctx)?;
         ggez::timer::yield_now();
         Ok(())
