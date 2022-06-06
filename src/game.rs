@@ -426,7 +426,7 @@ impl event::EventHandler<ggez::GameError> for GameState {
             let secs = self.start_time.elapsed().as_secs() as i32
                 - self.prev_time_paused
                 - self.current_time_paused;
-            self.time_left = 10 - secs;
+            self.time_left = 30 - secs;
             if self.time_left <= 0 {
                 self.end_game();
             }
