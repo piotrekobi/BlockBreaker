@@ -1,6 +1,6 @@
 # BlockBreaker
 
-## BlockBreaker is a simple block-breaking game written in rust. Break as many blocks as you can in 30 seconds
+## BlockBreaker is a simple block-breaking game written in rust. Break as many blocks as you can in 30 seconds!
 
 To run the python server use:
 
