@@ -10,37 +10,32 @@ pub const GRID_CELL_SIZE: [f32; 2] = [32.0, 32.0];
 const DESIRED_FPS: u32 = 30;
 
 lazy_static! {
-    static ref BLOCK_TYPES: HashMap<&'static str, BlockType> = HashMap::from(
-        [
-            (
-                "Red",
-                BlockType {
-                    color: (255, 0, 0).into(),
-                    duration: 5000,
-                    value: 10,
-                },
-            ),
-            (
-                "Blue",
-                BlockType {
-                    color: (0, 0, 255).into(),
-                    duration: 10000,
-                    value: 5,
-                },
-            ),
-            (
-                "Green",
-                BlockType {
-                    color: (0, 255, 0).into(),
-                    duration: 15000,
-                    value: 3,
-                },
-            ),
-        ]
-        .iter()
-        .cloned()
-        .collect(),
-    );
+    static ref BLOCK_TYPES: HashMap<&'static str, BlockType> = HashMap::from([
+        (
+            "Red",
+            BlockType {
+                color: (255, 0, 0).into(),
+                duration: 5000,
+                value: 10,
+            },
+        ),
+        (
+            "Blue",
+            BlockType {
+                color: (0, 0, 255).into(),
+                duration: 10000,
+                value: 5,
+            },
+        ),
+        (
+            "Green",
+            BlockType {
+                color: (0, 255, 0).into(),
+                duration: 15000,
+                value: 3,
+            },
+        ),
+    ]);
 }
 
 #[derive(Clone, Copy)]
@@ -270,6 +265,7 @@ pub struct GameState {
     score: i32,
     start_time: Instant,
     pause_time: Option<Instant>,
+    time_left: i32,
     prev_time_paused: i32,
     current_time_paused: i32,
     p_pressed: bool,
@@ -295,6 +291,7 @@ impl GameState {
             score: 0,
             start_time: Instant::now(),
             pause_time: Instant::now().into(),
+            time_left: 60,
             prev_time_paused: 0,
             current_time_paused: 0,
             p_pressed: false,
@@ -379,40 +376,18 @@ impl GameState {
                 GRID_SIZE[1] as f32 * GRID_CELL_SIZE[1] as f32
                     - 1.5 * GRID_CELL_SIZE[1] as f32 as f32,
             ]);
-        let secs = self.start_time.elapsed().as_secs() as i32
-            - self.prev_time_paused
-            - self.current_time_paused;
-        let mut time_text =
-            ggez::graphics::Text::new(format!("Time: {}:{:0>2}", secs / 60, secs % 60));
+        let mut time_text = ggez::graphics::Text::new(format!("Time left: {}", self.time_left));
         time_text.set_font(graphics::Font::default(), graphics::PxScale::from(40.0));
         let time_params = graphics::DrawParam::default()
             .color(graphics::Color::BLACK)
             .dest([
-                GRID_CELL_SIZE[0] as f32 * GRID_SIZE[0] as f32 * 0.3 as f32,
-                GRID_SIZE[1] as f32 * GRID_CELL_SIZE[1] as f32
-                    - 1.5 * GRID_CELL_SIZE[1] as f32 as f32,
-            ]);
-
-        let time_score = secs as f32 / self.score as f32;
-        let text: String;
-        if time_score.is_nan() || time_score.is_infinite() {
-            text = String::from("Time / Score: -");
-        } else {
-            text = format!("Time / Score: {:.3}", time_score);
-        }
-        let mut time_score_text = ggez::graphics::Text::new(text);
-        time_score_text.set_font(graphics::Font::default(), graphics::PxScale::from(40.0));
-        let time_score_params = graphics::DrawParam::default()
-            .color(graphics::Color::BLACK)
-            .dest([
-                GRID_CELL_SIZE[0] as f32 * GRID_SIZE[0] as f32 * 0.55 as f32,
+                GRID_CELL_SIZE[0] as f32 * GRID_SIZE[0] as f32 * 0.65 as f32,
                 GRID_SIZE[1] as f32 * GRID_CELL_SIZE[1] as f32
                     - 1.5 * GRID_CELL_SIZE[1] as f32 as f32,
             ]);
 
         graphics::draw(ctx, &score_text, score_params)?;
         graphics::draw(ctx, &time_text, time_params)?;
-        graphics::draw(ctx, &time_score_text, time_score_params)?;
 
         Ok(())
     }
@@ -432,11 +407,29 @@ impl GameState {
             self.last_block_add_time = Instant::now();
         }
     }
+
+    fn end_game(&mut self) {
+        let mut map = HashMap::new();
+        map.insert("score", self.score);
+        let client = reqwest::blocking::Client::new();
+        let _res = client
+            .post("http://127.0.0.1:5000/scores")
+            .json(&map)
+            .send();
+        std::process::exit(0);
+    }
 }
 
 impl event::EventHandler<ggez::GameError> for GameState {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
         while timer::check_update_time(ctx, DESIRED_FPS) {
+            let secs = self.start_time.elapsed().as_secs() as i32
+                - self.prev_time_paused
+                - self.current_time_paused;
+            self.time_left = 10 - secs;
+            if self.time_left <= 0 {
+                self.end_game();
+            }
             self.set_direction(ctx);
             if ggez::input::keyboard::is_key_pressed(ctx, KeyCode::P) {
                 self.p_pressed = true
@@ -473,7 +466,6 @@ impl event::EventHandler<ggez::GameError> for GameState {
                 self.check_restart();
             }
         }
-
         Ok(())
     }
 
